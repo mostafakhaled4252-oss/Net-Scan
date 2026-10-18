@@ -1,0 +1,235 @@
+import time
+import socket
+from concurrent.futures import ThreadPoolExecutor
+from argparse import ArgumentParser
+import json
+from rich.console import Console
+from tqdm import tqdm
+import logging
+from rich.table import Table
+#logging و rich التهيئة العامة و اعدادات
+console = Console()
+#لحفظ الاحداث في ملف نصي(Audit Trail) اعداد نظام تسجيل العمليات و الاخطاء
+logging.basicConfig(filename="cyber_log.txt",
+                    level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s",
+                    encoding="utf-8")
+#يظهر عند بدء تشغيل الاداة (ASCII Art Banner) شعار ترحيبي فني
+BANNER = (r"""[green1]                               ,----,                                                            
+         ,--.                ,/   .`|                                                       ,--. 
+       ,--.'|    ,---,.    ,`   .'  :          .--.--.     ,----..     ,---,              ,--.'| 
+   ,--,:  : |  ,'  .' |  ;    ;     /         /  /    '.  /   /   \   '  .' \         ,--,:  : | 
+,`--.'`|  ' :,---.'   |.'___,/    ,'         |  :  /`. / |   :     : /  ;    '.    ,`--.'`|  ' : 
+|   :  :  | ||   |   .'|    :     |          ;  |  |--`  .   |  ;. /:  :       \   |   :  :  | | 
+:   |   \ | ::   :  |-,;    |.';  ;          |  :  ;_    .   ; /--` :  |   /\   \  :   |   \ | : 
+|   : '  '; |:   |  ;/|`----'  |  |           \  \    `. ;   | ;    |  :  ' ;.   : |   : '  '; | 
+'   ' ;.    ;|   :   .'    '   :  ;            `----.   \|   : |    |  |  ;/  \   \'   ' ;.    ; 
+|   | | \   ||   |  |-,    |   |  '            __ \  \  |.   | '___ '  :  | \  \ ,'|   | | \   | 
+'   : |  ; .''   :  ;/|    '   :  |           /  /`--'  /'   ; : .'||  |  '  '--'  '   : |  ; .' 
+|   | '`--'  |   |    \    ;   |.'           '--'.     / '   | '/  :|  :  :        |   | '`--'   
+'   : |      |   :   .'    '---'               `--'---'  |   :    / |  | ,'        '   : |       
+;   |.'      |   | ,'                                     \   \ .'  `--''          ;   |.'       
+'---'        `----'                                        `---`                   '---'         
+[bold yellow]                         [ Professional Network & Port Scanner Tool v2.0 ]""")
+#(OOP Architecture) كلاس فحص الشبكات و المنافذ
+class NetworkScanner:
+    def __init__(self, target, path, timeout, ports_to_scan, output_file, is_common, threads):
+        """تهيئة الخصائص الاساسية للهدف و عملية الفحص"""
+        self.target = target
+        self.path = path
+        self.timeout = timeout
+        self.ports_to_scan = ports_to_scan
+        self.output_file = output_file
+        self.is_common = is_common
+        self.threads = threads
+        # قوائم لتخزين حالة المنافذ
+        self.open_ports = {}
+        self.safety_ports = []
+        self.close_ports = []
+    def scan_port(self, port):
+        """Bannerلجلب ال HTTP و ارسال طلب TCP دالة فحص منفذ فردي: تقوم بفتح اتصال"""
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        try:
+            # محاولة التصال بالهدف و المنفذ المحدد
+            s.connect((self.target, port))
+            #(Banner Grabbing) خفيف لجلب معلومات الخدمة HTTP ارسال طلب
+            http_request = f"GET {self.path} HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            s.sendall(http_request.encode())
+            banner = s.recv(1024).decode(encoding="utf-8", errors="ignore").strip()
+            # اذا استجابة الخدمة و ارسلت بانرا,ينم حفظه كمنفذ مفتوح
+            if banner:
+                self.open_ports[port] = banner
+                logging.info(f"Open port found -> Target: {self.target}:{port} | Banner: {banner}")
+        except (ConnectionRefusedError, socket.timeout, ConnectionResetError, OSError):
+            #اذا رفض المنفذ الاتصال او انتهت المهلة يعتبر منفذا مغلقا
+            self.close_ports.append(port)
+        except PermissionError:
+            #اذا حدث خطا صلاحيات يعتبر منفذا مقيد/امنا
+            self.safety_ports.append(port)
+            logging.warning(f"Permission Error on port -> Target: {self.target}:{port}")
+        finally:
+            s.close()#اغلاق المقبس لتجنب استنزاف موارد النظام
+    def run_scan(self):
+        #دالة ادارة و تنفيذ الفحص المتوازي و عرض النتائج للمستخدم
+        start_time = time.time()
+        logging.info(f"Started scanning target: {self.target} with {self.threads} threads.")
+        #(tqdm) مع شريط نقدم (Multithreading) تنفيذ الفحص متعدد الخيوط
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            list(tqdm(executor.map(self.scan_port, self.ports_to_scan), total=len(self.ports_to_scan), desc=f"Scanning {self.target}"))
+        end_time = time.time()
+        scan_duration = end_time - start_time
+        total_ports = len(self.ports_to_scan)
+        #؟(Offline) التحقق الذكي هل الجهاز بالكامل غير متصل
+        if len(self.close_ports) == total_ports:
+            console.print(f"[red3][!] Target {self.target} is OFFLINE or unreachable!")
+            console.print(f"[yellow3]Time to analyze = {scan_duration:.2f}s\n")
+            logging.warning(f"Target {self.target} is OFFLINE or unreachable!")
+            time.sleep(2)
+            return #الخروج الفوري لمنع طباعة القوائم الطويلة
+        #(Rich Table) عرض النتائج المفتوحة داخل جدول ملون واحترافي
+        if self.open_ports:
+            table = Table(title=f"Scan Results for Target: {self.target}",style="cyan",title_style="bold magenta")
+            table.add_column("Port", style="green",justify="center",width=10)
+            table.add_column("State", style="bold green",justify="center",width=12)
+            table.add_column("Service Information / Banner", style="yellow")
+            for open_port, Information in self.open_ports.items():
+                table.add_row(str(open_port), "OPEN", Information)
+                table.add_row("  ","  ","  ")
+            print("\n")
+            console.print(table)
+            print("\n")
+        if self.safety_ports:
+            console.print("[cyan3]The Safety ports: \n")
+            for safety_port in self.safety_ports:
+                console.print(f"[cyan3]- Port {safety_port}")
+            print("\n")
+        if self.is_common and self.close_ports:
+            console.print("[red3]The close ports count: " + f"{len(self.close_ports)} closed ports hidden for clean view.")
+            for close_port in self.close_ports:
+                console.print(f"[red3]Port {close_port}")
+        console.print(f"[yellow3]\nTime to analyze the ports = {scan_duration:.2f} s")
+        logging.info(f"Completed scanning target: {self.target} in {scan_duration:.2f} seconds.")
+#--- (CLI) نقطة بداية التشغيل و نحليل وسائط سطر الاوامر
+if __name__ == "__main__":
+    #اعداد وسائط تشغيل البرنامج عبر الطرفية
+    console.print(BANNER)
+    parser = ArgumentParser()
+    parser.add_argument("-t", "--target",default="127.0.0.1",help="Target IP address")
+    parser.add_argument("-s", "--start",default=1, type=int,help="Start port for scanning (default: 1)")
+    parser.add_argument("-e","--end",default=1024, type=int,help="End port for scanning (default: 1024)")
+    parser.add_argument("--timeout",type=float,default=0.5,help="Connection timeout in seconds (default: 0.5)")
+    parser.add_argument("--path", default="/", help="The HTTP path to request")
+    parser.add_argument("--common",action="store_true",help="Scan common ports list")
+    parser.add_argument("--output",help="Save scan results to a JSON file(e.g. results.Json)")
+    parser.add_argument("-f","--file",help="file containing target ip addresses (one per line)")
+    parser.add_argument("--threads",type=int,default=100,help="Number of concurrent threads  (default: 100)")
+    parser.add_argument("--html",help="Save scan results to an HTML report file")
+    args = parser.parse_args()
+    targets_to_scan = []
+    #(List comprehension اما هدف فردي او قراءة من ملف نصي عبر) معالجة قراءة الاهداف
+    if args.file:
+        try:
+            with open(args.file, "r", encoding="utf-8") as file:
+                targets_to_scan = [line.strip() for line in file if line.strip()]
+        except FileNotFoundError:
+            console.print(f"[red3][!] Error: File '{args.file}' not found!")
+            exit(1)
+    else:
+        targets_to_scan = [args.target]
+    #تحديد نطاق او قائمة المنافذ المطلوبة للفحص
+    if args.common:
+        PortsToScan = [80, 443, 8080, 623, 21, 22]
+    else:
+        if args.start <= 0 or args.start > 65535 or args.end > 65535 or args.end < args.start:
+            console.print("[red3][!] The target port must be between 1 and 65535 and the starting port must be smaller than the end port")
+            exit(1)
+        PortsToScan = range(args.start, args.end + 1)
+    all_scan_results = {}
+    #حلقة التكرار لفحص كافة الاهداف تباعا
+    for target_input in targets_to_scan:
+        try:
+            #حقيقي IP تحويل النطاق الى
+            target_ip = socket.gethostbyname(target_input)
+        except socket.gaierror:
+            console.print(f"[red3][!] Warning: Invalid target address '{target_input}',skipping...")
+            logging.warning(f"Invalid target address '{target_input}', skipping.")
+            continue
+        console.print(f"\n[bold cyan3][*] Starting scan on target: {target_ip}")
+        #انشاء كائن الفحص و تشغيله
+        scanner = NetworkScanner(
+            target=target_ip,
+            path=args.path,
+            timeout=args.timeout,
+            ports_to_scan=PortsToScan,
+            output_file=None,
+            is_common=args.common,
+            threads=args.threads)
+        scanner.run_scan()
+        #تجميع التقارير استعدادا لحفظها
+        if args.output or args.html:
+            target_report = {
+                      "path": args.path,
+                      "time out": args.timeout,
+                      "threads":args.threads,
+                      "open_ports": scanner.open_ports,
+                      "safety_ports": scanner.safety_ports, }
+            if args.common:
+                target_report["close_ports"] = scanner.close_ports
+            all_scan_results[target_ip] = target_report
+    #(json و HTML) حفظ التقارير النهائية
+    if args.output and all_scan_results:
+        with open(args.output, "w", encoding="utf-8") as file:
+            json.dump(all_scan_results, file, ensure_ascii=False, indent=4)
+        console.print(f"\n[green3][+] All targets results successfully saved to {args.output}")
+        logging.info(f"Results successfully saved to {args.output}")
+    if args.html and all_scan_results:
+        #الاحترافية بتصميم داكن HTML بناء هيكل صفحة ال
+        html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>NET SCAN - Security Audit Report</title>
+    <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 30px; }
+        h1 { color: #58a6ff; text-align: center; font-size: 2.5em; text-transform: uppercase; letter-spacing: 2px; }
+        .target-box { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 25px; margin-bottom: 25px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+        h2 { color: #3fb950; border-bottom: 2px solid #21262d; padding-bottom: 10px; }
+        .meta-info { color: #8b949e; font-size: 0.95em; margin-bottom: 15px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { border: 1px solid #30363d; padding: 12px; text-align: left; }
+        td { color: #c9d1d9; }
+        .open {color: #3fb950; font-weight: bold; }
+        .footer { text-align: center; color: #8b949e; margin-top: 40px; font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <h1>NET SCAN Security Report</h1>
+                """
+        for target, data in all_scan_results.items():
+            html_content += f"""
+    <div class="target-box">
+        <h2>Target IP: {target}</h2>
+        <div class="meta-info">
+            <strong>Path:</strong> {data['path']} &nbsp;|&nbsp;
+            <strong>Timeout:</strong> {data['time out']}s &nbsp;|&nbsp
+            <strong>Threads:</strong> {data.get('threads', 100)}
+        </div>
+        <table>
+            <tr><th>Port</th><th>State</th><th>Service Information / Banner</th></tr>
+"""
+            if data['open_ports']:
+                for port, banner in data['open_ports'].items():
+                    html_content += f"<tr><td>{port}</td><td class ='open'>Open</td><td><pre style='margin:0; font-family:inherit;'>{banner}</pre></td></tr>"
+            else:
+                html_content += "<tr><td colspan='3' style='text-align:center; color:#8b949e;'>No open ports detected or target offline.</td></tr>"
+
+            html_content += "</table></div>"
+        html_content += """
+    <div class="footer">Generated automatically by NET SCAN Tool v2.0</div>
+</body>
+</html>"""
+        with open(args.html, "w", encoding="utf-8") as file:
+            file.write(html_content)
+        console.print(f"\n[green3][+] HTML Report successfully saved to {args.html}")
+        logging.info(f"HTML Report successfully saved to {args.html}")
