@@ -1,4 +1,4 @@
-```markdown
+
 # 🛡️ NET SCAN v2.0 - Professional Network & Port Scanner
 
 An advanced, object-oriented network and port scanning utility built in Python. Designed specifically for security professionals and penetration testers to perform accurate, high-speed target analysis backed by stunning visual reports and robust audit logging.
@@ -72,6 +72,6 @@ python ip_and_ports.py --file ips.txt --common --threads 100 --html audit_report
 * **`*.json`**: Structured raw data report for programmatic integration.
 * **`*.html`**: Executive dark-themed security audit report ready for presentation.
 
----
+
 
 *Developed as a professional security auditing tool.*
